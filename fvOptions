@@ -1,0 +1,760 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | fvOptions                                                  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvOptions;
+}
+
+// ================================================================
+// HEAT SOURCE: Gaussian-Parabolic (Chiumenti et al. 2016)
+// Q(r,z) = (2*eta*P)/(d*r_max^2) * exp(-3*r^2/r0(z)^2)
+// r0(z_depth) = r_max * sqrt((d - z_depth)/d),  z_depth in [0,d]
+// ================================================================
+
+EBMHeatSource
+{
+    type            scalarCodedSource;
+    active          true;
+    name            EBMGaussianParabolic;
+
+    scalarCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (h);
+
+        codeInclude
+        #{
+            #include "fvMesh.H"
+            #include "fvMatrices.H"
+            #include "volFields.H"
+            #include <cmath>
+        #};
+
+        codeAddSup
+        #{
+            const scalar eta      = 0.85;
+            const scalar P        = 1.5e4;
+            const scalar r_max    = 250.0e-6;
+            const scalar d        = 2.0e-3;
+            const scalar V_scan   = 1.5;
+            const scalar A        = 0.0;
+            const scalar f        = 0.0;
+
+            const scalar x_start   = -3.0 * r_max;
+            const scalar normCoeff = (2.0 * eta * P) / (d * sqr(r_max));
+
+            const scalar t      = mesh_.time().value();
+            const scalar dt_sim = mesh_.time().deltaTValue();
+            const scalar x0_new = x_start + V_scan * t;
+            const scalar x0_old = x_start + V_scan * (t - dt_sim);
+            const scalar y0     = A * (2.0/M_PI) *
+                                  Foam::asin(Foam::sin(2.0*M_PI*f*t));
+
+            const vectorField& C = mesh_.C();
+            const scalar z_top   = gMax(C.component(2));
+
+            scalarField& Qdot = eqn.source();
+
+            forAll(C, cellI)
+            {
+                const scalar z_depth = z_top - C[cellI].z();
+                if (z_depth < 0 || z_depth > d) continue;
+
+                const scalar r0 = r_max * Foam::sqrt((d - z_depth) / d);
+                const scalar xc = C[cellI].x();
+                const scalar dy = C[cellI].y() - y0;
+
+                if (xc < (x0_old - r0) || xc > (x0_new + r0)) continue;
+                if (Foam::sqr(dy) > sqr(r0)) continue;
+
+                const scalar x_nearest =
+                    Foam::max(x0_old, Foam::min(x0_new, xc));
+                const scalar dx = xc - x_nearest;
+                const scalar r2 = dx*dx + dy*dy;
+                if (r2 > sqr(r0)) continue;
+
+                Qdot[cellI] -= mesh_.V()[cellI] *
+                               normCoeff * Foam::exp(-3.0 * r2 / sqr(r0));
+            }
+        #};
+
+        codeAddSupRho
+        #{
+            const scalar eta      = 0.85;
+            const scalar P        = 1.5e4;
+            const scalar r_max    = 250.0e-6;
+            const scalar d        = 2.0e-3;
+            const scalar V_scan   = 1.5;
+            const scalar A        = 0.0;
+            const scalar f        = 0.0;
+
+            const scalar x_start   = -3.0 * r_max;
+            const scalar normCoeff = (2.0 * eta * P) / (d * sqr(r_max));
+
+            const scalar t      = mesh_.time().value();
+            const scalar dt_sim = mesh_.time().deltaTValue();
+            const scalar x0_new = x_start + V_scan * t;
+            const scalar x0_old = x_start + V_scan * (t - dt_sim);
+            const scalar y0     = A * (2.0/M_PI) *
+                                  Foam::asin(Foam::sin(2.0*M_PI*f*t));
+
+            const vectorField& C = mesh_.C();
+            const scalar z_top   = gMax(C.component(2));
+
+            scalarField& Qdot = eqn.source();
+
+            forAll(C, cellI)
+            {
+                const scalar z_depth = z_top - C[cellI].z();
+                if (z_depth < 0 || z_depth > d) continue;
+
+                const scalar r0 = r_max * Foam::sqrt((d - z_depth) / d);
+                const scalar xc = C[cellI].x();
+                const scalar dy = C[cellI].y() - y0;
+
+                if (xc < (x0_old - r0) || xc > (x0_new + r0)) continue;
+                if (Foam::sqr(dy) > sqr(r0)) continue;
+
+                const scalar x_nearest =
+                    Foam::max(x0_old, Foam::min(x0_new, xc));
+                const scalar dx = xc - x_nearest;
+                const scalar r2 = dx*dx + dy*dy;
+                if (r2 > sqr(r0)) continue;
+
+                Qdot[cellI] -= mesh_.V()[cellI] *
+                               normCoeff * Foam::exp(-3.0 * r2 / sqr(r0));
+            }
+        #};
+
+        codeCorrect   #{ #};
+        codeConstrain #{ #};
+    }
+}
+
+// ================================================================
+// MOMENTUM SINK: Darcy / Carman-Kozeny (Enthalpy-Porosity)
+// Implicit treatment via matrix diagonal — unconditionally stable
+// Only active in mushy zone to avoid 1e10 coefficient in solid
+// ================================================================
+
+mushyZoneMomentumSink
+{
+    type            vectorCodedSource;
+    active          true;
+    name            DarcyMushyZone;
+
+    vectorCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (U);
+
+        codeInclude
+        #{
+            #include "volFields.H"
+        #};
+
+        codeAddSup      #{ #};
+
+        codeAddSupRho
+        #{
+            const scalar T_solidus  = 1878.0;
+            const scalar T_liquidus = 1928.0;
+            const scalar C_mush     = 1.0e7;
+            const scalar eps_m      = 1.0e-3;
+
+            const volScalarField& T =
+                mesh_.lookupObject<volScalarField>("T");
+
+            forAll(T, cellI)
+            {
+                scalar fl = 0.0;
+                if      (T[cellI] >= T_liquidus) fl = 1.0;
+                else if (T[cellI] >  T_solidus)
+                    fl = (T[cellI] - T_solidus) /
+                         (T_liquidus - T_solidus);
+
+                const scalar fs = 1.0 - fl;
+
+                if (fs > 1e-6 && fs < 0.9999)
+                {
+                    const scalar Dcoeff = Foam::min
+                    (
+                        C_mush * sqr(fs) / (Foam::pow3(fl) + eps_m),
+                        1.0e6
+                    );
+                    eqn.diag()[cellI] += Dcoeff * mesh_.V()[cellI];
+                }
+            }
+        #};
+
+        codeCorrect   #{ #};
+        codeConstrain #{ #};
+    }
+}
+
+// ================================================================
+// k(T) CORRECTION: compensates for constant k_eff=14 in thermoType
+// True k(T) = 4.5 + 0.0108*T - 3e-6*T^2  (Mills 2002)
+// ================================================================
+
+kTCorrection
+{
+    type            scalarCodedSource;
+    active          true;
+    name            kTCorrectionSource;
+
+    scalarCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (h);
+
+        codeInclude
+        #{
+            #include "fvMesh.H"
+            #include "fvMatrices.H"
+            #include "volFields.H"
+            #include "fvc.H"
+        #};
+
+        codeAddSup
+        #{
+            const scalar k_eff = 14.0;
+
+            const volScalarField& T =
+                mesh_.lookupObject<volScalarField>("T");
+
+            volScalarField kDelta
+            (
+                IOobject
+                (
+                    "kDelta",
+                    mesh_.time().timeName(),
+                    mesh_,
+                    IOobject::NO_READ,
+                    IOobject::NO_WRITE
+                ),
+                mesh_,
+                dimensionedScalar("zero", dimPower/dimLength/dimTemperature, 0.0)
+            );
+
+            forAll(T, cellI)
+            {
+                const scalar Tc = T[cellI];
+                scalar kTrue = 0.0;
+                if (Tc <= 1928.0)
+                    kTrue = 4.5 + 0.0108*Tc - 3.0e-6*Tc*Tc;
+                else
+                {
+                    const scalar Tliq = 1928.0;
+                    kTrue = 4.5 + 0.0108*Tliq - 3.0e-6*Tliq*Tliq;
+                }
+                kDelta[cellI] = kTrue - k_eff;
+            }
+
+            eqn -= fvc::laplacian(kDelta, T);
+        #};
+
+        codeAddSupRho
+        #{
+            const scalar k_eff = 14.0;
+
+            const volScalarField& T =
+                mesh_.lookupObject<volScalarField>("T");
+
+            volScalarField kDelta
+            (
+                IOobject
+                (
+                    "kDelta",
+                    mesh_.time().timeName(),
+                    mesh_,
+                    IOobject::NO_READ,
+                    IOobject::NO_WRITE
+                ),
+                mesh_,
+                dimensionedScalar("zero", dimPower/dimLength/dimTemperature, 0.0)
+            );
+
+            forAll(T, cellI)
+            {
+                const scalar Tc = T[cellI];
+                scalar kTrue = 0.0;
+                if (Tc <= 1928.0)
+                    kTrue = 4.5 + 0.0108*Tc - 3.0e-6*Tc*Tc;
+                else
+                {
+                    const scalar Tliq = 1928.0;
+                    kTrue = 4.5 + 0.0108*Tliq - 3.0e-6*Tliq*Tliq;
+                }
+                kDelta[cellI] = kTrue - k_eff;
+            }
+
+            eqn -= fvc::laplacian(kDelta, T);
+        #};
+
+        codeCorrect   #{ #};
+        codeConstrain #{ #};
+    }
+}
+
+// ================================================================
+// LATENT HEAT SOURCE: Ti6Al4V phase change, L = 290 kJ/kg
+// S = -rho * L * d(fl)/dt
+// Only active in mushy zone [T_solidus, T_liquidus]
+// ================================================================
+
+latentHeatSource
+{
+    type            scalarCodedSource;
+    active          true;
+    name            LatentHeatEBM;
+
+    scalarCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (h);
+
+        codeInclude
+        #{
+            #include "fvMesh.H"
+            #include "fvMatrices.H"
+            #include "volFields.H"
+        #};
+
+        codeAddSup
+        #{
+            const scalar T_solidus  = 1878.0;
+            const scalar T_liquidus = 1928.0;
+            const scalar L          = 290000.0;
+            const scalar rho_m      = 4200.0;
+            const scalar deltaT_ph  = T_liquidus - T_solidus;
+
+            const scalar dt = mesh_.time().deltaTValue();
+            if (dt < 1e-15) return;
+
+            const volScalarField& T =
+                mesh_.lookupObject<volScalarField>("T");
+            const volScalarField& T_old = T.oldTime();
+
+            scalarField& Slat = eqn.source();
+
+            forAll(T, cellI)
+            {
+                const scalar Tc     = T[cellI];
+                const scalar Tc_old = T_old[cellI];
+
+                if (Tc <= T_solidus || Tc >= T_liquidus) continue;
+
+                const scalar dT = Tc - Tc_old;
+                if (mag(dT) < 1e-10) continue;
+
+                const scalar dfldt = dT / (deltaT_ph * dt);
+                Slat[cellI] += mesh_.V()[cellI] * rho_m * L * dfldt;
+            }
+        #};
+
+        codeAddSupRho
+        #{
+            const scalar T_solidus  = 1878.0;
+            const scalar T_liquidus = 1928.0;
+            const scalar L          = 290000.0;
+            const scalar rho_m      = 4200.0;
+            const scalar deltaT_ph  = T_liquidus - T_solidus;
+
+            const scalar dt = mesh_.time().deltaTValue();
+            if (dt < 1e-15) return;
+
+            const volScalarField& T =
+                mesh_.lookupObject<volScalarField>("T");
+            const volScalarField& T_old = T.oldTime();
+
+            scalarField& Slat = eqn.source();
+
+            forAll(T, cellI)
+            {
+                const scalar Tc     = T[cellI];
+                const scalar Tc_old = T_old[cellI];
+
+                if (Tc <= T_solidus || Tc >= T_liquidus) continue;
+
+                const scalar dT = Tc - Tc_old;
+                if (mag(dT) < 1e-10) continue;
+
+                const scalar dfldt = dT / (deltaT_ph * dt);
+                Slat[cellI] += mesh_.V()[cellI] * rho_m * L * dfldt;
+            }
+        #};
+
+        codeCorrect   #{ #};
+        codeConstrain #{ #};
+    }
+}
+
+// ================================================================
+// VAPORISATION CAP: two-layer approach for physical robustness
+//
+// Layer 1 (codeAddSupRho): soft implicit relaxation toward T_boil
+//   — drives h toward h_boil over tau = 10*dt timesteps
+//   — implicit diagonal treatment: unconditionally stable
+//   — smoothly activated over 200K band above T_boil
+//   — physically represents energy absorption by vaporisation
+//
+// Layer 2 (codeConstrain): hard clamp safety net
+//   — catches any residual overshoot after matrix solve
+//   — runs post-solve so no sign convention issues
+//   — represents Stefan condition: T cannot exceed T_boil
+//
+// Ti6Al4V boiling point: 3560 K
+// ================================================================
+
+vaporisationCap
+{
+    type            scalarCodedSource;
+    active          false;
+    name            VaporisationCapEBM;
+
+    scalarCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (h);
+
+        codeInclude
+        #{
+            #include "fvMesh.H"
+            #include "fvMatrices.H"
+            #include "volFields.H"
+        #};
+
+        codeAddSup      #{ #};
+
+        codeAddSupRho
+        #{
+            const scalar T_boil  = 3560.0;    // Ti6Al4V boiling point [K]
+            const scalar Cp_ref  = 700.0;     // [J/kg/K]
+            const scalar rho_m   = 4200.0;    // [kg/m3]
+            const scalar h_boil  = Cp_ref * T_boil;  // 2.492e6 J/kg
+
+            // Relaxation timescale: 10 timesteps
+            // — slow enough not to cause stiffness
+            // — fast enough to prevent runaway
+            const scalar tau_vap = 10.0 * mesh_.time().deltaTValue();
+            if (tau_vap < 1e-15) return;
+
+            // alpha: relaxation coefficient [kg/m3/s]
+            const scalar alpha = rho_m * Cp_ref / tau_vap;
+
+            const volScalarField& T =
+                mesh_.lookupObject<volScalarField>("T");
+
+            forAll(T, cellI)
+            {
+                const scalar Tc = T[cellI];
+                if (Tc <= T_boil) continue;
+
+                const scalar V = mesh_.V()[cellI];
+
+                // Smooth activation: ramps from 0 at T_boil to full at T_boil+200K
+                // Avoids sharp discontinuity that triggers oscillations
+                const scalar excess = Tc - T_boil;
+                const scalar weight = Foam::min(excess / 200.0, 1.0);
+
+                // Implicit relaxation toward h_boil:
+                // adds alpha*V*weight to diagonal (stabilising)
+                // adds alpha*V*weight*h_boil to RHS (target value)
+                // Net effect: drives h toward h_boil without exploding
+                eqn.diag()[cellI]   += alpha * V * weight;
+                eqn.source()[cellI] -= alpha * V * weight * h_boil;
+            }
+        #};
+
+        codeCorrect 
+	#{ 
+    		// Hard clamp: directly write T = T_boil for any cell above boiling
+    		// codeCorrect runs after each PIMPLE outer iteration
+    		// Accesses T directly — no sign convention, guaranteed to work
+    		const scalar T_boil = 3560.0;
+
+    		volScalarField& T = const_cast<volScalarField&>
+    		(
+       			mesh_.lookupObject<volScalarField>("T")
+    		);
+
+    		forAll(T, cellI)
+    		{
+        		if (T[cellI] > T_boil)
+            			T[cellI] = T_boil;
+    		}
+
+    		// Also clamp boundary faces
+    		volScalarField::Boundary& Tbf = T.boundaryFieldRef();
+    		forAll(Tbf, patchI)
+    		{
+        		forAll(Tbf[patchI], faceI)
+        		{
+            			if (Tbf[patchI][faceI] > T_boil)
+                		    Tbf[patchI][faceI] = T_boil;
+        		}
+    		}
+	#};
+
+        codeConstrain	#{ #};
+    }
+}
+
+// ================================================================
+// EVAPORATION SURFACE SINK: Hertz-Knudsen evaporative cooling
+// Removes energy from top surface cells above onset temperature
+// Uses Antoine equation for Ti vapor pressure
+// Active above T_start = 2800K (below boiling, onset of significant
+// evaporation for Ti6Al4V)
+// ================================================================
+
+evaporationSurfaceSink
+{
+    type            scalarCodedSource;
+    active          true;
+    name            EvaporationSurfacePhysical;
+
+    scalarCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (h);
+
+        codeInclude
+        #{
+            #include "fvMesh.H"
+            #include "volFields.H"
+            #include "surfaceFields.H"
+            #include "mathematicalConstants.H"
+        #};
+
+        codeAddSup      #{ #};
+
+        codeAddSupRho
+        #{
+            const scalar T_start = 2800.0;     // onset temperature [K]
+            const scalar L_v     = 9.7e6;      // latent heat of vaporisation [J/kg]
+            const scalar beta    = 0.5;        // evaporation coefficient [-]
+            const scalar M       = 0.0479;     // molar mass Ti6Al4V [kg/mol]
+            const scalar R       = 8.314;      // gas constant [J/mol/K]
+            // Antoine constants for Ti (approximate, NIST-based)
+            const scalar Aant    = 12.9;
+            const scalar Bant    = 5.13e4;
+
+            const word patchName("top");
+
+            const fvMesh& mesh = this->mesh_;
+            const label patchID = mesh.boundaryMesh().findPatchID(patchName);
+            if (patchID == -1) return;
+
+            const volScalarField& T =
+                mesh.lookupObject<volScalarField>("T");
+
+            const fvPatch& patch     = mesh.boundary()[patchID];
+            const scalarField& magSf = patch.magSf();
+            const labelList& faceCells = patch.faceCells();
+
+            forAll(faceCells, i)
+            {
+                const label cellI = faceCells[i];
+                const scalar Tcell = T[cellI];
+
+                if (Tcell < T_start) continue;
+
+                const scalar Aface = magSf[i];
+                const scalar Vcell = mesh.V()[cellI];
+
+                // Vapor pressure via Antoine equation [Pa]
+                const scalar p_sat = Foam::exp(Aant - Bant / Tcell);
+
+                // Hertz-Knudsen mass flux [kg/m2/s]
+                const scalar mDot =
+                    beta * p_sat *
+                    Foam::sqrt
+                    (
+                        M / (2.0 * constant::mathematical::pi * R * Tcell)
+                    );
+
+                // Evaporative heat flux [W/m2]
+                const scalar Q = mDot * L_v;
+
+                // Convert to volumetric source [W/m3] * V = [W]
+                // Negative: removes energy from surface cells
+                // Maximum removable energy: h must stay above h_min = Cp*(T_solidus - T_ref)
+		// Prevents evaporation sink from draining cell below physical minimum
+		const scalar h_min = 700.0 * (1878.0 - 298.15);  // ~1.11e6 J/kg
+		const volScalarField& h_field =
+    			mesh.lookupObject<volScalarField>("h");
+		const scalar h_current = h_field[cellI];
+		const scalar h_removable = Foam::max(h_current - h_min, 0.0);
+
+		// Cap the sink so it cannot remove more than available enthalpy
+		const scalar Q_limited = Foam::min(Q * Aface, h_removable * mesh.V()[cellI] / 								 mesh_.time().deltaTValue());
+
+		eqn.source()[cellI] -= Q_limited;
+            }
+        #};
+
+        codeCorrect   #{ #};
+        codeConstrain #{ #};
+    }
+}
+
+// ================================================================
+// RECOIL PRESSURE: momentum sink from evaporation recoil
+// Active above T_start = 3200K (significant vapor pressure)
+// Pushes melt pool downward — drives keyhole formation
+// Currently disabled — enable after thermal solution is stable
+// ================================================================
+
+recoilPressureSafe
+{
+    type            vectorCodedSource;
+    active          false;
+    name            RecoilForceSafe;
+
+    vectorCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (U);
+
+        codeInclude
+        #{
+            #include "fvMesh.H"
+            #include "volFields.H"
+            #include "surfaceFields.H"
+        #};
+
+        codeAddSup      #{ #};
+
+        codeAddSupRho
+        #{
+            const scalar T_start = 3200.0;     // onset [K]
+            const scalar scale   = 1.0e4;      // pressure scale [Pa] — start small
+
+            const word patchName("top");
+
+            const fvMesh& mesh = this->mesh_;
+            const label patchID = mesh.boundaryMesh().findPatchID(patchName);
+            if (patchID == -1) return;
+
+            const volScalarField& T =
+                mesh.lookupObject<volScalarField>("T");
+
+            const fvPatch& patch = mesh.boundary()[patchID];
+            const vectorField& Sf  = patch.Sf();
+            const labelList& faceCells = patch.faceCells();
+
+            forAll(faceCells, i)
+            {
+                const label cellI = faceCells[i];
+                const scalar Tcell = T[cellI];
+
+                if (Tcell < T_start) continue;
+
+                // Exponential pressure rise above T_start
+                // Sf points outward (upward) so -p*Sf pushes downward
+                const scalar p = scale * Foam::exp((Tcell - T_start) / 400.0);
+                eqn.source()[cellI] += -p * Sf[i];
+            }
+        #};
+
+        codeCorrect   #{ #};
+        codeConstrain #{ #};
+    }
+}
+
+// ================================================================
+// MARANGONI EFFECT: surface tension gradient driven flow
+// dSigma/dT = -3e-4 N/m/K for Ti6Al4V
+// Only active in liquid/mushy zone at top surface
+// Currently disabled — enable after recoil pressure is stable
+// ================================================================
+
+marangoniForce
+{
+    type            vectorCodedSource;
+    active          true;
+    name            MarangoniImprovedEBM;
+
+    vectorCodedSourceCoeffs
+    {
+        selectionMode   all;
+        fields          (U);
+
+        codeInclude
+        #{
+            #include "fvMesh.H"
+            #include "volFields.H"
+            #include "surfaceFields.H"
+            #include "fvcGrad.H"
+        #};
+
+        codeAddSup      #{ #};
+
+        codeAddSupRho
+        #{
+            const scalar dSigma_dT  = -3.0e-4;   // [N/m/K] Ti6Al4V
+            const scalar T_solidus  = 1878.0;
+            const scalar T_liquidus = 1928.0;
+            const scalar scale      = 0.1;        // tuning factor
+
+            const word patchName("top");
+
+            const fvMesh& mesh = this->mesh_;
+            const label patchID = mesh.boundaryMesh().findPatchID(patchName);
+            if (patchID == -1) return;
+
+            const volScalarField& T =
+                mesh.lookupObject<volScalarField>("T");
+
+            const volVectorField gradT = fvc::grad(T);
+
+            const fvPatch& patch = mesh.boundary()[patchID];
+            const vectorField& Sf    = patch.Sf();
+            const scalarField& magSf = patch.magSf();
+            const labelList& faceCells = patch.faceCells();
+
+            forAll(faceCells, i)
+            {
+                const label cellI = faceCells[i];
+                const scalar Tc = T[cellI];
+
+                // Liquid fraction — Marangoni only in liquid/mushy
+                scalar fl = 0.0;
+                if      (Tc >= T_liquidus) fl = 1.0;
+                else if (Tc >  T_solidus)
+                    fl = (Tc - T_solidus) / (T_liquidus - T_solidus);
+
+                if (fl < 1e-3) continue;
+
+                // Outward normal
+                const vector n = Sf[i] / (magSf[i] + SMALL);
+
+                // Tangential temperature gradient
+                const vector gradT_t =
+                    gradT[cellI] - (gradT[cellI] & n) * n;
+
+                const scalar V = mesh.V()[cellI];
+
+                // Smooth activation: fl^2 ramps from 0 to 1
+                const scalar weight = sqr(fl);
+
+                // Marangoni force: sigma gradient drives flow
+                // toward colder regions (dSigma/dT < 0 for most metals)
+                const vector F =
+                    scale * weight * dSigma_dT * gradT_t * magSf[i] / V;
+
+                eqn.source()[cellI] += F * V;
+            }
+        #};
+
+        codeCorrect   #{ #};
+        codeConstrain #{ #};
+    }
+}

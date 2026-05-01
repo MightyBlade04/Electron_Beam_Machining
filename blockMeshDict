@@ -1,0 +1,49 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | blockMeshDict | Background mesh for snappyHexMesh         |
+\*---------------------------------------------------------------------------*/
+FoamFile { version 2.0; format ascii; class dictionary; location "system"; object blockMeshDict; }
+
+convertToMeters 1;
+
+// Domain: X[0,50mm] Y[-5mm,5mm] Z[0,10mm]
+// Base cell: X=1mm, Y=0.5mm, Z=0.5mm
+// Level-4 snappy: X→62.5µm, Y/Z→31.25µm
+
+vertices
+(
+    (  0.000  -0.005  0.000 )  // 0
+    (  0.050  -0.005  0.000 )  // 1
+    (  0.050   0.005  0.000 )  // 2
+    (  0.000   0.005  0.000 )  // 3
+    (  0.000  -0.005  0.004 )  // 4
+    (  0.050  -0.005  0.004 )  // 5
+    (  0.050   0.005  0.004 )  // 6
+    (  0.000   0.005  0.004 )  // 7
+);
+
+blocks
+(
+    // 10 x 3 x 3 cells = 1mm base cell -> refined by snappy
+    hex (0 1 2 3 4 5 6 7) (50 20 8) simpleGrading (1 1 1)
+);
+
+edges ();
+
+boundary
+(
+    top    { type wall; faces ((4 5 6 7)); }
+    bottom { type wall; faces ((0 3 2 1)); }
+    sides
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)   // front
+            (3 7 6 2)   // back
+            (0 4 7 3)   // left
+            (1 2 6 5)   // right
+        );
+    }
+);
+
+mergePatchPairs ();

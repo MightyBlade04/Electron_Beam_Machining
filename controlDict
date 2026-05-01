@@ -1,0 +1,133 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | controlDict | buoyantPimpleFoam | Ti6Al4V                 |
+\*---------------------------------------------------------------------------*/
+FoamFile { version 2.0; format ascii; class dictionary; location "system"; object controlDict; }
+
+application         buoyantPimpleFoam;
+
+startFrom           startTime;
+startTime           0;
+stopAt              endTime;
+endTime             0.005;// 5ms — beam travels 7.5mm, enough to verify scan
+
+// -----------------------------------------------------------
+// deltaT: Co < 0.5 derivation
+//   Level-4 cell: dx_min = r_max/4 = 250e-6/4 = 62.5e-6 m
+//   U_ref = V_scan = 1.0 m/s
+//   dt_max = 0.5 * 62.5e-6 / 1.0 = 31.25e-6 s
+//   Use 1e-5 s -> Co ~ 0.16 (conservative)
+// -----------------------------------------------------------
+deltaT              1.0e-5;
+adjustTimeStep      yes;
+maxCo               0.5;
+maxDeltaT           1.0e-5;
+
+writeControl        adjustableRunTime;
+writeInterval       3.0e-4;
+purgeWrite          0;
+writeFormat         binary;
+writePrecision      8;
+writeCompression    off;
+timeFormat          general;
+timePrecision       8;
+runTimeModifiable   yes;
+
+functions
+{
+    maxTemperature
+    {
+        type            fieldMinMax;
+        libs            ( "libfieldFunctionObjects.so" );
+        log             yes;
+        writeControl    timeStep;
+        writeInterval   1;
+        fields          ( T );
+    }
+
+    probeBeamCenter
+    {
+        type            probes;
+        libs            ( "libsampling.so" );
+        writeControl    timeStep;
+        writeInterval   1;
+        fields          ( T p_rgh U h );
+        probeLocations
+        (
+            ( 0.0005  0.0000  0.0038 )
+	    ( 0.005   0.0000  0.0020 )
+            ( 0.0025  0.0000  0.0038 )
+            ( 0.0045  0.0000  0.0038 )
+        );
+    }
+
+    meltBoundary
+    {
+        type            surfaces;
+        libs            ( "libsampling.so" );
+        writeControl    writeTime;
+        surfaceFormat   vtk;
+        fields          ( T U );
+        surfaces
+        (
+            solidusIsosurface
+            {
+                type        isoSurface;
+                isoField    T;
+                isoValue    1878.0;
+                interpolate true;
+            }
+        );
+    }
+
+
+    clipEnthalpy
+    {
+        type            coded;
+        libs            ("libutilityFunctionObjects.so");
+        name            clipEnthalpyEBM;
+
+        codeExecute
+        #{
+		const scalar h_max = 700.0 * 3560.0;  // 2.492e6 J/kg
+
+        	// Use time().lookupObject for parallel compatibility
+        	const fvMesh& mesh =
+            		time().lookupObject<fvMesh>(polyMesh::defaultRegion);
+
+        	volScalarField& h = const_cast<volScalarField&>
+        	(
+            	mesh.lookupObject<volScalarField>("h")
+        	);
+
+        	label nClamped = 0;
+        	forAll(h, cellI)
+        	{
+            		if (h[cellI] > h_max)
+            		{
+                		h[cellI] = h_max;
+                		nClamped++;
+            		}
+        	}
+
+        	volScalarField::Boundary& hBf = h.boundaryFieldRef();
+        	forAll(hBf, patchI)
+        	{
+            		forAll(hBf[patchI], faceI)
+            		{
+                		if (hBf[patchI][faceI] > h_max)
+                    		    hBf[patchI][faceI] = h_max;
+            		}
+        	}
+
+        	reduce(nClamped, sumOp<label>());
+        	if (nClamped > 0)
+            		Info << "clipEnthalpy: clamped " << nClamped
+                 	     << " cells to h_max=" << h_max << endl;
+        #};
+
+        codeRead  #{ #};
+        codeWrite #{ #};
+        codeEnd   #{ #};
+    }
+
+}

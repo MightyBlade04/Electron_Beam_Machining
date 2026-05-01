@@ -1,0 +1,82 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | snappyHexMeshDict | 4-level refinement for r_max = 250µm  |
+\*---------------------------------------------------------------------------*/
+FoamFile { version 2.0; format ascii; class dictionary;
+           location "system"; object snappyHexMeshDict; }
+
+// Refinement levels:
+//  Level 2: 250µm  (outer scan zone)
+//  Level 4: 62.5µm (beam core — 4 cells per r_max)
+
+castellatedMesh     true;
+snap                false;       // FIX 3: was true — no surfaces to snap to
+addLayers           false;
+
+geometry
+{
+    // FIX 1: removed meltPoolSphere — static sphere useless for moving beam
+    scanRegionBox
+    {
+        type box;
+        min (0.000 -0.001  0.000);   // FIX 2: was 0.001, now covers full depth
+        max (0.050  0.001  0.004);
+    }
+    beamCoreBox
+    {
+        type box;
+        min (0.000 -0.0005 0.002);   // top 2mm = beam penetration depth
+        max (0.050  0.0005 0.004);
+    }
+}
+
+castellatedMeshControls
+{
+    maxLocalCells           2000000;
+    maxGlobalCells          10000000;
+    minRefinementCells      10;
+    nCellsBetweenLevels     3;
+    features                ();
+    refinementSurfaces      {}
+    resolveFeatureAngle     30;
+
+    refinementRegions
+    {
+        // FIX 1: removed meltPoolSphere entry
+        scanRegionBox  { mode inside; levels ((1E15 2)); }  // 250µm
+        beamCoreBox    { mode inside; levels ((1E15 4)); }  // 62.5µm
+    }
+
+    locationInMesh          (0.025 0.0 0.002);
+    allowFreeStandingZoneFaces true;
+}
+
+snapControls
+{
+    nSmoothPatch 3; tolerance 2.0; nSolveIter 30;
+    nRelaxIter 5; nFeatureSnapIter 10;
+    implicitFeatureSnap false; explicitFeatureSnap true;
+    multiRegionFeatureSnap false;
+}
+
+addLayersControls
+{
+    relativeSizes true; expansionRatio 1.2;
+    finalLayerThickness 0.3; minThickness 0.1; nGrow 0;
+    featureAngle 60; nRelaxIter 3; nSmoothSurfaceNormals 1;
+    nSmoothNormals 3; nSmoothThickness 10;
+    maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio 0.3;
+    minMedialAxisAngle 90; nBufferCellsNoExtrude 0;
+    nLayerIter 50; nRelaxedIter 20;
+}
+
+meshQualityControls
+{
+    maxNonOrtho 60; maxBoundarySkewness 20; maxInternalSkewness 4;
+    maxConcave 80; minFlatness 0.5; minVol 1e-30; minTetQuality 1e-30;
+    minArea -1; minTwist 0.02; minDeterminant 0.001; minFaceWeight 0.05;
+    minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
+    relaxed { maxNonOrtho 75; }
+}
+
+debug 0;
+mergeTolerance 1e-6;

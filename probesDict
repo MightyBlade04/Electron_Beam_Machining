@@ -1,0 +1,20 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      probesDict;
+}
+
+type            probes;
+libs            (sampling);
+
+fields          (T);
+
+probeLocations
+(
+    (0.0    0.0   0.000)     // surface, beam centre
+    (0.0    0.0  -0.001)     // 1mm depth
+    (0.0    0.0  -0.002)     // 2mm depth
+    (0.001  0.0   0.000)     // 1mm lateral from centre
+);

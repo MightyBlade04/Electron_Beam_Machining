@@ -1,0 +1,38 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | fvSchemes | Crank-Nicolson + vanLeer                      |
+\*---------------------------------------------------------------------------*/
+FoamFile { version 2.0; format ascii; class dictionary; location "system"; object fvSchemes; }
+
+ddtSchemes      {
+			default         Euler;
+    			ddt(rho,U)      CrankNicolson 0.7;
+    			ddt(rho,h)      CrankNicolson 0.7;
+   			ddt(rho,K)      CrankNicolson 0.7;
+		}
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(T)         cellLimited Gauss linear 1.0;
+    grad(h)         cellLimited Gauss linear 1.0;
+    grad(U)         cellLimited Gauss linear 1.0;
+    grad(p_rgh)     Gauss linear;
+}
+
+divSchemes
+{
+    default                                     none;
+    div(phi,h)                                  Gauss linearUpwind grad(h);
+    div(phi,K)                                  Gauss linearUpwind grad(U);
+    div(phi,U)                                  Gauss linearUpwind grad(U);
+    div(phi,k)                                  Gauss vanLeer;
+    div(phi,omega)                              Gauss vanLeer;
+    div(phi,epsilon)                            Gauss vanLeer;
+    div(((rho*nuEff)*dev2(T(grad(U)))))         Gauss linear;
+}
+
+laplacianSchemes    { default Gauss linear corrected; }
+interpolationSchemes { default linear; }
+snGradSchemes       { default corrected; }
+fluxRequired        { default no; p_rgh; }
+wallDist            { method meshWave; }
