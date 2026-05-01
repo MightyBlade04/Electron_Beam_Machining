@@ -1,0 +1,37 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | T | Radiation top + baseplate conduction bottom            |
+\*---------------------------------------------------------------------------*/
+FoamFile { version 2.0; format ascii; class volScalarField; location "0"; object T; }
+dimensions      [ 0 0 0 1 0 0 0 ];
+internalField   uniform 1000;    // EBM preheat temperature [K]
+boundaryField
+{
+    // Top surface: vacuum (h=0) + Stefan-Boltzmann radiation
+    // q_rad = eps * sigma * (T^4 - T_env^4)
+    top
+    {
+        type            externalWallHeatFluxTemperature;
+        kappaMethod     fluidThermo;          // C: was fluidThermo
+        mode            coefficient;
+        h               uniform 0.0;          // No convection (vacuum)
+        Ta              uniform 293.15;       // C: was 300.0, paper uses 20°C
+        emissivity      0.8;          // A: was 0.7, paper Section 7.1
+                                              // A: added uniform keyword
+        qr              none;
+        value           uniform 1000.0;
+    }
+    // Side walls: insulated
+    sides { type zeroGradient; }
+    // Baseplate: conduction clamping — q = h_cond*(T - T_sink)
+    bottom
+    {
+        type            externalWallHeatFluxTemperature;
+        kappaMethod     fluidThermo;          // E: was fluidThermo
+        mode            coefficient;
+        h               uniform 500.0;        // B: was 2500.0, paper Section 7.1
+        Ta              uniform 293.15;       // C: was 300.0
+        emissivity      0.0;          // no radiation from baseplate
+        qr              none;                 // added for consistency
+        value           $internalField;
+    }
+}

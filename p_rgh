@@ -1,0 +1,14 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | p_rgh | Vacuum: 1e-5 Pa                                   |
+\*---------------------------------------------------------------------------*/
+FoamFile { version 2.0; format ascii; class volScalarField; location "0"; object p_rgh; }
+
+dimensions      [ 1 -1 -2 0 0 0 0 ];
+internalField   uniform 1e-5;
+
+boundaryField
+{
+    top    { type totalPressure; p0 uniform 1e-5; rho rho; psi none; gamma 1; value uniform 1e-5; }
+    sides  { type fixedFluxPressure; value uniform 1e-5; }
+    bottom { type fixedFluxPressure; value uniform 1e-5; }
+}

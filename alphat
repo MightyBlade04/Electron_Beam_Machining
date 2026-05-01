@@ -1,0 +1,22 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | alphat | Turbulent thermal diffusivity (laminar — dummy)   |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      alphat;
+}
+
+dimensions      [ 1 -1 -1 0 0 0 0 ];
+
+internalField   uniform 0;             // zero in laminar mode
+
+boundaryField
+{
+    top    { type calculated; value uniform 0; }
+    bottom { type calculated; value uniform 0; }
+    sides  { type calculated; value uniform 0; }
+}
