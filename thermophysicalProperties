@@ -1,0 +1,63 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| EBM Simulation | thermophysicalProperties | Ti6Al4V                        |
+\*---------------------------------------------------------------------------*/
+FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object thermophysicalProperties; }
+
+// ------------------------------------------------------------
+// thermoType: heRhoThermo + hConst + const + rhoConst
+// This combination is ALWAYS compiled in buoyantPimpleFoam.
+// hPolynomial/polynomialTransport are NOT in the default build.
+//
+// Temperature-dependent Cp and k are handled instead by:
+//   fvOptions: codedSource on field h (corrects Cp(T) deviation)
+//   fvOptions: codedSource on field h (adds k(T) correction flux)
+// Using effective averages here:
+//   Cp_eff = 700 J/(kg K)  [representative 300-1928 K average]
+//   k_eff  = 14  W/(m K)   [representative 300-1928 K average]
+//   mu_liq = 0.0045 Pa.s   [liquid pool]
+//   Pr     = mu*Cp/k = 0.0045*700/14 = 0.225
+// ------------------------------------------------------------
+thermoType
+{
+    type            heRhoThermo;
+    mixture         pureMixture;
+    transport       const;          // constTransport — always compiled
+    thermo          hConst;         // hConstThermo   — always compiled
+    equationOfState rhoConst;       // rhoConst EOS   — always compiled
+    specie          specie;
+    energy          sensibleEnthalpy;
+}
+
+mixture
+{
+    specie          { nMoles 1; molWeight 47.867; }
+    equationOfState { rho 4200; }   // [kg/m^3] average solid/liquid
+
+    // Effective constant Cp — average of solid+liquid range
+    // True Cp(T) = 526 + 0.134*T (Boivineau 2006)
+    // At T=1000K: Cp~660; T=1500K: Cp~727 -> use 700 as representative
+    thermodynamics
+    {
+        Hf      0;
+        Cp      700;    // [J/(kg K)] effective average for Ti6Al4V
+    }
+
+    // Effective constant transport properties
+    // True k(T) = 4.5 + 0.0108*T - 3e-6*T^2 (Mills 2002)
+    // At T=1000K: k~13; T=1500K: k~17 -> use 14 as representative
+    // Pr = mu*Cp/k = 0.0045*700/14 = 0.225
+    transport
+    {
+        mu      0.005;     // [Pa.s] liquid Ti6Al4V (Boivineau 2006)
+        Pr      0.05;      // [-] liquid pool Prandtl number
+    }
+}
+
+// Phase change parameters (used by fvOptions Darcy sink)
+phaseChange { T_solidus 1878.0; T_liquidus 1928.0; L 290000.0; C_mush 1.0e7; epsilon_mush 1.0e-3; }
+
+// Radiation (Stefan-Boltzmann, vacuum)
+radiation { emissivity 0.35; sigma 5.67e-8; T_env 300.0; }
+
+// Baseplate conduction clamping
+baseplate { h_cond 2000.0; T_sink 300.0; }
